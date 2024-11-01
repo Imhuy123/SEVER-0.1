@@ -25,8 +25,10 @@ namespace SocketServer
             Console.WriteLine($"Server IP: {serverIp}");
             Console.WriteLine($"Port: {portToRun}");
 
-            LoadMessageHistory();  // Load lịch sử khi khởi động server
+            LoadMessageHistory();
             RunAsServer(serverIp, portToRun);
+
+            Console.ReadLine();
         }
 
         static void RunAsServer(string ipAddress, int port)
@@ -35,8 +37,8 @@ namespace SocketServer
             {
                 IPAddress ipAddr = IPAddress.Parse(ipAddress);
                 IPEndPoint localEndPoint = new IPEndPoint(ipAddr, port);
-                Socket listener = new Socket(ipAddr.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
 
+                Socket listener = new Socket(ipAddr.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
                 listener.Bind(localEndPoint);
                 listener.Listen(10);
 
@@ -58,11 +60,15 @@ namespace SocketServer
         static void HandleClient(Socket clientSocket)
         {
             string userName = null;
+            StringBuilder messageBuffer = new StringBuilder(); // Bộ đệm để lưu dữ liệu nhận được
 
             try
             {
                 byte[] buffer = new byte[1024];
-                int numByte = clientSocket.Receive(buffer);
+                int numByte;
+
+                // Nhận username của client
+                numByte = clientSocket.Receive(buffer);
                 userName = Encoding.UTF8.GetString(buffer, 0, numByte).Replace("<EOF>", "");
 
                 lock (_clients)
@@ -72,14 +78,12 @@ namespace SocketServer
                         _clients[userName].Close();
                         _clients.Remove(userName);
                     }
-
                     _clients.Add(userName, clientSocket);
                 }
 
                 Console.WriteLine($"Client connected: {userName}");
-
                 SendUserListToAll();
-                SendChatHistoryToUser(userName);  // Gửi lại toàn bộ lịch sử tin nhắn
+                SendChatHistoryToUser(userName);
 
                 while (clientSocket.Connected)
                 {
@@ -89,11 +93,18 @@ namespace SocketServer
                         if (numByte > 0)
                         {
                             string receivedData = Encoding.UTF8.GetString(buffer, 0, numByte);
-                            foreach (var message in receivedData.Split(new[] { "<EOF>" }, StringSplitOptions.RemoveEmptyEntries))
+                            messageBuffer.Append(receivedData);
+
+                            // Xử lý tin nhắn trong bộ đệm nếu phát hiện <EOF>
+                            while (messageBuffer.ToString().Contains("<EOF>"))
                             {
+                                string completeMessage = messageBuffer.ToString();
+                                int eofIndex = completeMessage.IndexOf("<EOF>");
+                                string message = completeMessage.Substring(0, eofIndex);
+                                messageBuffer.Remove(0, eofIndex + "<EOF>".Length); // Xóa tin nhắn đã xử lý khỏi bộ đệm
+
                                 Console.WriteLine($"Received message from {userName}: {message}");
                                 ProcessMessage(userName, message.Trim());
-                                SendToUsers(message);
                             }
                         }
                     }
@@ -130,7 +141,7 @@ namespace SocketServer
                 {
                     clientSocket.Shutdown(SocketShutdown.Both);
                 }
-                catch (SocketException) { /* Ignore shutdown exception */ }
+                catch (SocketException) { }
                 finally
                 {
                     clientSocket.Close();
@@ -148,33 +159,15 @@ namespace SocketServer
             {
                 string toUser = splitMessage[1].Trim();
                 string content = splitMessage[2].Trim();
-                string fullMessage = $"{fromUser}->{toUser}:{content}<EOF>";
+                string fullMessage = $"{fromUser} -> {toUser} : {content}<EOF>";
 
-                Console.WriteLine($"Processing message from {fromUser} to {toUser}");
-
-                // Lưu lịch sử tin nhắn
-                _messageHistory.Add(new ChatLog { FromUser = fromUser, ToUser = toUser, Message = content });
-                SaveMessageHistory();
+                // Gửi tin nhắn đến người gửi và người nhận với định dạng chuẩn
+                SendMessageToUser(fromUser, fullMessage);
+                SendMessageToUser(toUser, fullMessage);
             }
             else
             {
                 Console.WriteLine($"Received message in wrong format: {message}");
-            }
-        }
-
-        static void SendToUsers(string message)
-        {
-            var splitMessage = message.Split(new[] { "->", ":" }, StringSplitOptions.None);
-            if (splitMessage.Length == 3)
-            {
-                string fromUser = splitMessage[0].Trim();
-                string toUser = splitMessage[1].Trim();
-                string content = splitMessage[2].Trim();
-                string fullMessage = $"{fromUser}->{toUser}:{content}<EOF>";
-
-                // Gửi tin nhắn đến cả hai người dùng
-                SendMessageToUser(fromUser, fullMessage);
-                SendMessageToUser(toUser, fullMessage);
             }
         }
 
@@ -184,6 +177,7 @@ namespace SocketServer
             {
                 try
                 {
+                    Console.WriteLine($"[Debug] Sending message to {user}: {message}");
                     byte[] messageBytes = Encoding.UTF8.GetBytes(message);
                     _clients[user].Send(messageBytes);
                     Console.WriteLine($"Message sent to {user}: {message}");
@@ -194,7 +188,7 @@ namespace SocketServer
                     CleanupClient(user, _clients[user]);
                 }
             }
-        }
+        } 
 
         static void SendUserListToAll()
         {
@@ -209,7 +203,7 @@ namespace SocketServer
                     {
                         client.Send(userListBytes);
                     }
-                    catch (SocketException) { /* Ignore disconnected clients */ }
+                    catch (SocketException) { }
                 }
             }
         }
@@ -228,10 +222,6 @@ namespace SocketServer
                     SendMessageToUser(userName, message);
                     Thread.Sleep(50);
                 }
-            }
-            else
-            {
-                Console.WriteLine($"User {userName} not found or disconnected.");
             }
         }
 
